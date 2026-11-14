@@ -16,3 +16,7 @@ python-dotenv
 pytest
 pytest-asyncio
 httpx
+
+# Calidad de código
+ruff
+pre-commit

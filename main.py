@@ -1,11 +1,24 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import logging
+import platform
+import time
 from contextlib import asynccontextmanager
 
-from app.database import create_db_and_tables
-from app.routers import usuarios, peliculas, favoritos
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlmodel import Session
 
-# TODO: Importar la configuración desde app.config
+from musica_api.config import get_settings
+from musica_api.database import create_db_and_tables, get_session
+from musica_api.errores import registrar_manejadores
+from musica_api.logging_config import configurar_logging
+from musica_api.middleware import HEADER_REQUEST_ID, registrar_requests
+from musica_api.routers import canciones, favoritos, usuarios
+
+settings = get_settings()
+configurar_logging(settings.log_level, settings.log_file)
+logger = logging.getLogger("musica_api")
+INICIO = time.time()
 
 
 @asynccontextmanager
@@ -16,41 +29,58 @@ async def lifespan(app: FastAPI):
     """
     # Startup: Crear tablas en la base de datos
     create_db_and_tables()
+    logger.info(
+        "%s v%s iniciada (entorno=%s)",
+        settings.app_name,
+        settings.app_version,
+        settings.environment,
+    )
     yield
-    
+
     # Shutdown: Limpiar recursos si es necesario
-    print("cerrando aplicación...")
+    logger.info("Cerrando aplicación...")
 
 
-# Crear la instancia de FastAPI con metadatos apropiados
-# Incluir: title, description, version, contact, license_info
 app = FastAPI(
-    title="API de Películas",
-    description="API RESTful para gestionar usuarios, películas y favoritos",
-    version="1.0.0",
+    title=settings.app_name,
+    description="API RESTful para gestionar usuarios, canciones y favoritos",
+    version=settings.app_version,
     lifespan=lifespan,
-    # TODO: Agregar información de contacto y licencia
-
+    contact={
+        "name": "LPA2 - Taller 3",
+        "url": "https://github.com/UR-CC/lpa2-taller3",
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+    },
 )
 
 
 # Configurar CORS para permitir solicitudes desde diferentes orígenes
-# Esto es importante para desarrollo con frontend separado
+# (p. ej. el frontend del Taller 4 en http://localhost:3000)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción, especificar orígenes permitidos
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Permite que el frontend lea el id de request para reportar errores
+    expose_headers=[HEADER_REQUEST_ID],
 )
 
+# Registrar cada request (método, ruta, estado, duración e id de seguimiento)
+app.middleware("http")(registrar_requests)
 
-# TODO: Incluir los routers de usuarios, canciones y favoritos
-# Ejemplo:
-# app.include_router(usuarios.router, prefix="/api/usuarios", tags=["Usuarios"])
+# Manejadores de errores: registran en el log y mantienen el formato {"detail": ...}
+registrar_manejadores(app)
 
 
-# Crear un endpoint raíz que retorne información básica de la API
+app.include_router(usuarios.router, prefix="/api/usuarios", tags=["Usuarios"])
+app.include_router(canciones.router, prefix="/api/canciones", tags=["Canciones"])
+app.include_router(favoritos.router, prefix="/api/favoritos", tags=["Favoritos"])
+
+
 @app.get("/", tags=["Root"])
 async def root():
     """
@@ -58,35 +88,46 @@ async def root():
     Retorna información básica y enlaces a la documentación.
     """
     return {
-        # TODO: Agregar información 
+        "nombre": settings.app_name,
+        "version": settings.app_version,
+        "entorno": settings.environment,
+        "documentacion": {"swagger": "/docs", "redoc": "/redoc"},
+        "endpoints": {
+            "usuarios": "/api/usuarios",
+            "canciones": "/api/canciones",
+            "favoritos": "/api/favoritos",
+        },
     }
 
 
-# Crear un endpoint de health check para monitoreo
 @app.get("/health", tags=["Health"])
-async def health_check():
+def health_check(session: Session = Depends(get_session)):
     """
     Health check endpoint para verificar el estado de la API.
     Útil para sistemas de monitoreo y orquestación.
     """
+    try:
+        session.exec(text("SELECT 1"))
+        estado_db = "ok"
+    except Exception as e:  # noqa: BLE001
+        logger.error("Health check: fallo de conexión a la base de datos: %s", e)
+        estado_db = f"error: {e}"
+
     return {
-        "status": "healthy",
-        # TODO: Agregar verificación de conexión a base de datos
-        # TODO: Agregar información sobre el sistema (uptime, memoria, etc.)
+        "status": "healthy" if estado_db == "ok" else "degraded",
+        "database": estado_db,
+        "uptime_segundos": round(time.time() - INICIO, 2),
+        "python": platform.python_version(),
+        "sistema": platform.system(),
     }
-
-
-# TODO: Opcional - Agregar middleware para logging de requests
-
-
-# TODO: Opcional - Agregar manejadores de errores personalizados
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
-        # TODO: Configurar el servidor uvicorn con los parámetros apropiados
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
     )
-
-

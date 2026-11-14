@@ -1,5 +1,10 @@
 # API de Música
 
+## Estudiante
+
+- **Nombre:** Derik Jair Hurtado Sinisterra
+- **GitHub:** [DerikHurt](https://github.com/DerikHurt)
+
 Una [API RESTful](https://aws.amazon.com/es/what-is/restful-api/) para gestionar usuarios, canciones y favoritos. Desarrollada con [FastAPI](https://fastapi.tiangolo.com/), [SQLModel](https://sqlmodel.tiangolo.com/) y [Pydantic](https://docs.pydantic.dev/).
 
 ## Descripción
@@ -17,6 +22,7 @@ El proyecto incluye una interfaz de documentación interactiva generada automát
 lpa2-taller3
 ├──  README.md            # Este archivo, documentación completa del proyecto
 ├──  .env                 # Variables de entorno (desarrollo, pruebas, producción)
+├──  .env.example         # Plantilla de variables de entorno (copiar como .env)
 ├──  .gitignore           # Archivos y directorios a ignorar por Git
 ├──  main.py              # Script principal para ejecutar la aplicación
 ├──  musica.db            # Base de Datos
@@ -53,12 +59,18 @@ lpa2-taller3
    - id_cancion: ID de la canción (clave foránea)
    - fecha_marcado: Fecha en que se marcó como favorito
 
+## Requisitos
+
+- [Python 3.12](https://www.python.org/downloads/) (es la versión con la que se prueba en el CI)
+- [Git](https://git-scm.com/downloads)
+- Opcional: [DBeaver](https://dbeaver.io/) para ver o editar `musica.db`
+
 ## Instalación
 
 1. Clona este repositorio:
 
    ```bash
-   git clone https://github.com/UR-CC/lpa2-taller3.git
+   git clone https://github.com/DerikHurt/lpa2-taller3.git
    cd lpa2-taller3
    ```
 
@@ -66,29 +78,67 @@ lpa2-taller3
 
    ```bash
    python -m venv venv
+
+   # Windows (PowerShell)
+   venv\Scripts\activate
+
+   # Linux / macOS / Git Bash
    source venv/bin/activate
    ```
 
-3. Instala las dependencias:
+   En PowerShell, si aparece un error de "ejecución de scripts deshabilitada", ejecuta una vez `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+3. Instala las dependencias (API, pruebas, ruff y pre-commit):
 
    ```bash
    pip install -r requirements.txt
    ```
 
-4. Ajusta las variables de entorno, editando el archivo `.env`
+4. (Opcional) Configura las variables de entorno. Sin `.env` la API funciona con los valores por defecto; para cambiarlos:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   y descomenta en `.env` lo que necesites (`DATABASE_URL`, `CORS_ORIGINS`, `LOG_LEVEL`, `LOG_FILE`, `ENVIRONMENT`).
 
 ## Ejecución
 
-1. Ejecuta la aplicación:
+1. Con el entorno virtual activado, ejecuta la aplicación:
 
    ```bash
-   uvicorn main:app --reload
+   uvicorn main:app --reload --no-access-log
    ```
+
+   `--no-access-log` evita que uvicorn repita cada petición, porque la API ya las registra con su propio formato. Al arrancar se crean las tablas si no existen; `musica.db` ya incluye 5 usuarios y 10 canciones de ejemplo.
 
 2. Accede a la aplicación:
    - API: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
    - Documentación *Swagger UI*: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
    - Documentación *ReDoc*: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
+   - Estado de la API: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+
+3. Para detenerla, pulsa `Ctrl + C` en la terminal.
+
+## Pruebas y calidad de código
+
+Con el entorno virtual activado:
+
+```bash
+python -m pytest                 # todas las pruebas
+python -m pytest -k favorito     # solo las que contienen "favorito" en el nombre
+ruff check --fix .               # linter
+ruff format .                    # formatter
+```
+
+Para que ruff y pytest se ejecuten antes de cada commit, instala los hooks una vez:
+
+```bash
+pre-commit install
+pre-commit run --all-files       # revisar todo el repositorio
+```
+
+El hook de pytest usa el `python` activo, así que haz los commits con el entorno virtual activado. GitHub Actions ejecuta ruff y pytest en cada push a `main` y en cada pull request.
 
 ## Uso de la API
 
@@ -153,3 +203,41 @@ lpa2-taller3
 
 8. **Subida de archivos**: Permitir la subida de archivos de audio y gestionar su almacenamiento en un servicio como S3 o similar.
 
+## Mejoras Implementadas
+
+### Registro (logging)
+
+- Todos los logs usan el formato `fecha | nivel | logger | mensaje` y cuelgan del logger `musica_api` (`musica_api/logging_config.py`).
+- **Middleware de requests** (`musica_api/middleware.py`): registra método, ruta, código de estado y duración de cada petición. Los errores 4xx/5xx se registran como `WARNING`/`ERROR`.
+- **Id de seguimiento**: cada respuesta incluye la cabecera `X-Request-ID` (o reutiliza la que envíe el cliente), y ese id aparece en el log. Así un error visto en el frontend se puede encontrar en los logs.
+- **Manejadores de errores** (`musica_api/errores.py`): registran los 404, 400 y errores de validación sin cambiar el formato `{"detail": ...}`. Una excepción no controlada se registra con su traceback y el cliente recibe un 500 genérico con el `request_id`, sin detalles internos.
+- Los routers registran las altas, cambios y bajas usando solo ids, sin correos ni nombres.
+- Configurable por variables de entorno en `.env`:
+
+  ```bash
+  LOG_LEVEL=INFO              # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  LOG_FILE=logs/musica_api.log  # opcional: archivo rotativo (1 MB x 5)
+  ```
+
+  En desarrollo el nivel por defecto es `DEBUG`; en producción se escribe además en `logs/musica_api.log`.
+- Para evitar líneas duplicadas con el log de acceso de uvicorn: `uvicorn main:app --reload --no-access-log`
+
+### Paginación
+
+- Todos los listados (`/api/usuarios`, `/api/canciones`, `/api/canciones/buscar`, `/api/favoritos` y `/api/usuarios/{id}/favoritos`) aceptan `offset` (por defecto `0`) y `limit` (por defecto `20`, máximo `100`).
+- La respuesta incluye el total de resultados, para que el frontend calcule el número de páginas (`ceil(total / limit)`):
+
+  ```json
+  GET /api/canciones/buscar?genero=rock&offset=20&limit=10
+
+  {
+    "items": [ { "id": 21, "titulo": "...", ... } ],
+    "total": 57,
+    "offset": 20,
+    "limit": 10
+  }
+  ```
+
+- En búsquedas, `total` cuenta solo los resultados filtrados.
+- Los resultados se ordenan por `id`, de modo que las páginas no repiten ni saltan elementos. Los favoritos de un usuario se devuelven del más reciente al más antiguo.
+- Implementación reutilizable en `musica_api/paginacion.py` (`Pagina[T]`, dependencia `parametros_paginacion` y función `paginar`).
